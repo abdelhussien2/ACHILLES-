@@ -1,0 +1,20 @@
+services:
+  - type: worker
+    name: sourhunter-bd-test
+    runtime: docker
+    plan: starter
+    envVars:
+      - key: SBR_USERNAME
+        sync: false
+      - key: SBR_PASSWORD
+        sync: false
+      - key: EMAIL_SENDER
+        sync: false
+      - key: EMAIL_PASSWORD
+        sync: false
+      - key: EMAIL_RECIPIENT
+        sync: false
+    disk:
+      name: bd-test-data
+      mountPath: /app/results
+      sizeGB: 1
