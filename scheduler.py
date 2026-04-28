@@ -26,9 +26,9 @@ NAME = "KozyKraft SF-Style Starter"
 
 # 3 different keywords — one per click, never repeated
 CLICK_KEYWORDS = [
-    "kozykraft sourdough starter",
-    "kozy kraft sourdough",
-    "kozykraft starter",
+    "san francisco sourdough starter",
+    "dehydrated sourdough starter packets",
+    "sourdough yeast packets culture",
 ]
 
 TALLY_FILE = "results/daily_tally.json"
