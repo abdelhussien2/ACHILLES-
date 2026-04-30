@@ -92,18 +92,63 @@ async def popups(page):
 
 
 async def search(page, query):
-    """Search Amazon via URL."""
+    """Search Amazon by typing in search box like a real user."""
     t = time.time()
     log.info(f"  [SEARCH] \"{query}\"")
 
-    url = f"https://www.amazon.com/s?k={query.replace(' ', '+')}"
-
+    # Go to Amazon homepage first
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=90000)
+        await page.goto("https://www.amazon.com/", wait_until="domcontentloaded", timeout=90000)
     except Exception as e:
-        log.warning(f"  [SEARCH] Page load issue: {str(e)[:60]}, checking anyway...")
+        log.warning(f"  [SEARCH] Page load issue: {str(e)[:60]}")
 
-    await page.wait_for_timeout(int(pause(3, 5)))
+    await page.wait_for_timeout(int(pause(2, 4)))
+    await handle_interstitial(page)
+    await popups(page)
+
+    # Random scroll on homepage like a real user browsing
+    try:
+        await page.evaluate(f"window.scrollTo(0, {random.randint(100, 400)})")
+        await page.wait_for_timeout(int(pause(1, 2)))
+        await page.evaluate("window.scrollTo(0, 0)")
+        await page.wait_for_timeout(int(pause(0.5, 1.5)))
+    except:
+        pass
+
+    # Find search box, click it with mouse movement
+    try:
+        search_box = page.locator("#twotabsearchtextbox").first
+        await search_box.wait_for(state="visible", timeout=15000)
+
+        # Move mouse to search box with realistic motion
+        box = await search_box.bounding_box()
+        if box:
+            # Click at slightly random position within box
+            target_x = box["x"] + box["width"] * random.uniform(0.2, 0.8)
+            target_y = box["y"] + box["height"] * random.uniform(0.3, 0.7)
+            await page.mouse.move(target_x, target_y, steps=random.randint(15, 30))
+            await page.wait_for_timeout(int(pause(0.3, 0.8)))
+
+        await search_box.click()
+        await page.wait_for_timeout(int(pause(0.5, 1.2)))
+
+        # Type with human-like delays per character
+        for char in query:
+            await search_box.type(char, delay=random.randint(60, 180))
+            # Occasional micro-pauses between words
+            if char == " " and random.random() < 0.3:
+                await page.wait_for_timeout(random.randint(150, 400))
+
+        # Brief pause before pressing enter (like reading the suggestion)
+        await page.wait_for_timeout(int(pause(0.4, 1.2)))
+        await page.keyboard.press("Enter")
+        log.info(f"  [SEARCH] Typed and submitted")
+    except Exception as e:
+        log.warning(f"  [SEARCH] Typing failed, falling back to URL: {str(e)[:60]}")
+        url = f"https://www.amazon.com/s?k={query.replace(' ', '+')}"
+        await page.goto(url, wait_until="domcontentloaded", timeout=90000)
+
+    await page.wait_for_timeout(int(pause(2, 4)))
     await handle_interstitial(page)
     await popups(page)
 
@@ -225,7 +270,7 @@ async def is_sponsored(page, asin):
 
 
 async def click_product(page, card, asin):
-    """Click product naturally."""
+    """Click product with realistic mouse movement and position."""
     for name, sel in [
         ("title", "h2 a"), ("image", ".s-product-image-container a"),
         ("asin-link", f"a[href*='/dp/{asin}']"), ("any-dp", "a[href*='/dp/']"),
@@ -234,7 +279,23 @@ async def click_product(page, card, asin):
             el = card.locator(sel).first
             if await el.is_visible(timeout=2000):
                 log.info(f"  [CLICK] {name}")
-                await el.click()
+
+                # Get element bounding box for realistic click positioning
+                box = await el.bounding_box()
+                if box:
+                    # Random position within element (not always center)
+                    target_x = box["x"] + box["width"] * random.uniform(0.25, 0.75)
+                    target_y = box["y"] + box["height"] * random.uniform(0.25, 0.75)
+
+                    # Move mouse with multiple steps (curved path)
+                    await page.mouse.move(target_x, target_y, steps=random.randint(20, 40))
+                    # Hover briefly like a human reading
+                    await page.wait_for_timeout(random.randint(300, 1200))
+                    # Click at the position
+                    await page.mouse.click(target_x, target_y)
+                else:
+                    await el.click()
+
                 return True, name
         except:
             continue
