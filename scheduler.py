@@ -26,9 +26,9 @@ NAME = "KozyKraft SF-Style Starter"
 
 # 3 different keywords — one per click, never repeated
 CLICK_KEYWORDS = [
-    "san francisco sourdough starter",
-    "dehydrated sourdough starter packets",
-    "sourdough yeast packets culture",
+    "sourdough starter culture",
+    "sourdough starter culture",
+    "sourdough starter culture",
 ]
 
 TALLY_FILE = "results/daily_tally.json"
@@ -143,9 +143,18 @@ async def run_cycle(tally, keyword):
         log.info(f"  ✓ SPONSORED!")
 
         click_screenshots = []
+
+        # Pre-click: browse the results page like a real shopper
+        log.info(f"  [BROWSE] Scrolling results page...")
+        await page.evaluate(f"window.scrollTo({{top: {random.randint(200, 500)}, behavior: 'smooth'}})")
+        await page.wait_for_timeout(int(pause(1, 2.5)))
+        await page.evaluate(f"window.scrollTo({{top: {random.randint(600, 1000)}, behavior: 'smooth'}})")
+        await page.wait_for_timeout(int(pause(1, 2)))
+        # Scroll back up toward target
         await page.evaluate(
-            f'document.querySelector(\'[data-asin="{ASIN}"]\')?.scrollIntoView({{block:"center"}})')
-        await page.wait_for_timeout(1500)
+            f'document.querySelector(\'[data-asin="{ASIN}"]\')?.scrollIntoView({{block:"center", behavior:"smooth"}})')
+        await page.wait_for_timeout(int(pause(1.5, 3)))
+
         ss = await screenshot(page, f"click_{ASIN}")
         if ss: click_screenshots.append(ss)
 
@@ -231,13 +240,13 @@ async def main():
             if clicked:
                 break
             # Retry in 5-7 min if organic/error
-            wait = random.randint(5, 7) * 60
+            wait = random.randint(8, 15) * 60
             log.info(f"  Retrying \"{keyword}\" in {wait//60}m...")
             await asyncio.sleep(wait)
 
         # Wait 60-90 min before next keyword (land in different hours)
         if i < len(CLICK_KEYWORDS) - 1:
-            wait = random.randint(60, 90) * 60
+            wait = random.randint(90, 120) * 60
             next_run = now() + timedelta(seconds=wait)
             log.info(f"  ✓ Click {i+1} done. Waiting {wait//60}m for next keyword.")
             log.info(f"  Next click at {next_run.strftime('%H:%M UTC')}")
