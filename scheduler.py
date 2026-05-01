@@ -21,10 +21,13 @@ logging.basicConfig(level=logging.INFO,
     handlers=[logging.StreamHandler(sys.stdout)])
 log = logging.getLogger("tracker")
 
-ASIN = "B0GG8F355W"
-NAME = "KozyKraft SF-Style Starter"
+TARGETS = {
+    "B0GG8F355W": "KozyKraft SF-Style Starter",
+    "B0FCPFH2WR": "KozyKraft Dehydrated Starter",
+    "B0GBWB83NM": "KozyKraft Live Wet Starter",
+}
 
-# 3 different keywords — one per click, never repeated
+# 3 clicks - any of the 3 KozyKraft ASINs counts
 CLICK_KEYWORDS = [
     "sourdough starter culture",
     "sourdough starter culture",
@@ -44,10 +47,11 @@ def save_tally(t):
         json.dump(t, f, indent=2)
 
 
-def record(tally, status, detail="", keyword="", screenshots=None):
+def record(tally, status, detail="", keyword="", screenshots=None, asin="", name=""):
     tally["cycles"] += 1
     entry = {"time": now().strftime("%Y-%m-%d %H:%M UTC"), "status": status,
              "detail": detail, "keyword": keyword,
+             "asin": asin, "name": name,
              "screenshots": screenshots or []}
     tally["log"].append(entry)
     if status == "clicked":
@@ -68,9 +72,9 @@ def send_email(tally):
         return
 
     lines = [
-        f"BRIGHTDATA SELF-TEST — FOOLPROOF",
-        f"Target: {NAME} ({ASIN})",
-        f"3 clicks, 3 different keywords",
+        f"BRIGHTDATA SELF-TEST — KOZYKRAFT MULTI-TARGET",
+        f"Targets: {', '.join([f'{n} ({a})' for a, n in TARGETS.items()])}",
+        f"3 clicks, any sponsored KozyKraft counts",
         "=" * 60, "",
         f"Clicks: {tally['clicks']}",
         f"Organic: {tally['organic']}",
@@ -83,12 +87,15 @@ def send_email(tally):
         lines.append(f"  Time:      {e['time']}")
         lines.append(f"  Status:    {e['status']}")
         lines.append(f"  Keyword:   {e.get('keyword', '?')}")
+        if e["status"] == "clicked":
+            lines.append(f"  ASIN:      {e.get('asin', '?')}")
+            lines.append(f"  Listing:   {e.get('name', '?')}")
         lines.append(f"  Detail:    {e.get('detail', '-')}")
         lines.append(f"  {'─' * 40}")
 
     msg = MIMEMultipart()
     msg["From"], msg["To"] = sender, to
-    msg["Subject"] = f"BrightData Test | {tally['clicks']}/3 clicks | {NAME}"
+    msg["Subject"] = f"BrightData Test | {tally['clicks']}/3 KozyKraft clicks"
     msg.attach(MIMEText("\n".join(lines), "plain"))
 
     attached = 0
@@ -114,7 +121,7 @@ def send_email(tally):
 
 
 async def run_cycle(tally, keyword):
-    """One cycle: search with specific keyword, click if sponsored."""
+    """One cycle: search with specific keyword, click first sponsored KozyKraft."""
     playwright = None
     browser = None
 
@@ -127,20 +134,35 @@ async def run_cycle(tally, keyword):
             record(tally, "error", "no results", keyword)
             return False
 
-        match = next((r for r in results if r["asin"] == ASIN), None)
+        # Find ALL KozyKraft listings on the page
+        kk_matches = [r for r in results if r["asin"] in TARGETS]
+        if not kk_matches:
+            record(tally, "error", "no KozyKraft on page", keyword)
+            log.warning(f"  No KozyKraft listings on page")
+            return False
+
+        log.info(f"  ✓ Found {len(kk_matches)} KozyKraft listing(s):")
+        for m in kk_matches:
+            log.info(f"    #{m['i']} [{m['asin']}] {TARGETS[m['asin']]}")
+
+        # Check each for sponsored status, click first sponsored
+        match = None
+        for m in kk_matches:
+            log.info(f"  Checking #{m['i']} [{m['asin']}] for sponsored...")
+            if await is_sponsored(page, m["asin"]):
+                match = m
+                log.info(f"  ✓ SPONSORED: {TARGETS[m['asin']]} ({m['asin']}) at #{m['i']}")
+                break
+            else:
+                log.info(f"  Not sponsored: {TARGETS[m['asin']]}")
+
         if not match:
-            record(tally, "error", "ASIN not on page", keyword)
-            log.warning(f"  {ASIN} not on page")
+            record(tally, "organic", f"all {len(kk_matches)} KozyKraft listings organic", keyword)
+            log.info(f"  All KozyKraft listings organic — will retry")
             return False
 
-        log.info(f"  ✓ Found {NAME} at #{match['i']}")
-
-        if not await is_sponsored(page, ASIN):
-            record(tally, "organic", "organic", keyword)
-            log.info(f"  Organic — will retry")
-            return False
-
-        log.info(f"  ✓ SPONSORED!")
+        ASIN = match["asin"]
+        NAME = TARGETS[ASIN]
 
         click_screenshots = []
 
@@ -195,7 +217,7 @@ async def run_cycle(tally, keyword):
                 pass
 
             log.info(f"  ✓ Clicked {NAME} via {method}")
-            record(tally, "clicked", method, keyword, click_screenshots)
+            record(tally, "clicked", method, keyword, click_screenshots, asin=ASIN, name=NAME)
             return True
         else:
             log.warning(f"  Click failed")
@@ -218,12 +240,15 @@ async def run_cycle(tally, keyword):
 
 async def main():
     log.info(f"\n{'='*60}")
-    log.info(f"  BRIGHTDATA SELF-TEST — FOOLPROOF")
-    log.info(f"  Target: {NAME} ({ASIN})")
-    log.info(f"  3 clicks, 3 different keywords:")
+    log.info(f"  BRIGHTDATA SELF-TEST — KOZYKRAFT MULTI-TARGET")
+    log.info(f"  Targets:")
+    for asin, name in TARGETS.items():
+        log.info(f"    {asin}: {name}")
+    log.info(f"  3 clicks, any sponsored KozyKraft counts")
+    log.info(f"  Keywords:")
     for i, kw in enumerate(CLICK_KEYWORDS):
         log.info(f"    Click {i+1}: \"{kw}\"")
-    log.info(f"  Gap: 60-90 min between clicks (different hours)")
+    log.info(f"  Gap: 90-120 min between successful clicks")
     log.info(f"{'='*60}\n")
 
     tally = {"clicks": 0, "organic": 0, "errors": 0, "cycles": 0, "log": []}
