@@ -33,23 +33,25 @@ async def create_browser():
     context = browser.contexts[0] if browser.contexts else await browser.new_context()
     page = context.pages[0] if context.pages else await context.new_page()
 
-    # Block ONLY large product images — keeps tracking pixels + scripts intact.
-    # Product images are ~200-500KB each, 50+ per search page = 90% of bandwidth.
-    # Amazon tracking pixels (fls-na, unagi-na) are tiny and use different URLs.
-    async def block_heavy(route):
-        url = route.request.url
-        # Block product listing images (the big ones)
-        if "m.media-amazon.com/images/I/" in url:
-            return await route.abort()
-        # Block fonts
-        if any(url.endswith(ext) for ext in [".woff", ".woff2", ".ttf", ".eot"]):
-            return await route.abort()
-        # Block video
-        if any(url.endswith(ext) for ext in [".mp4", ".webm"]):
-            return await route.abort()
+    # NO image blocking - Amazon requires images loaded for click attribution.
+    # Track bandwidth without blocking anything.
+    page._bytes_received = 0
+    page._requests_count = 0
+
+    async def track(route):
+        page._requests_count += 1
         await route.continue_()
 
-    await page.route("**/*", block_heavy)
+    await page.route("**/*", track)
+
+    async def on_response(response):
+        try:
+            body = await response.body()
+            page._bytes_received += len(body)
+        except:
+            pass
+
+    page.on("response", on_response)
 
     # Set longer timeouts
     page.set_default_timeout(60000)  # 60s
