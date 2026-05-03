@@ -12,7 +12,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.image import MIMEImage
 from datetime import datetime, timezone, timedelta
 from sourhunter4 import (
-    create_browser, search, is_sponsored, click_product,
+    create_browser, search, simple_search, is_sponsored,
+    click_product, simple_click_product,
     handle_interstitial, popups, pause, screenshot
 )
 
@@ -47,11 +48,11 @@ def save_tally(t):
         json.dump(t, f, indent=2)
 
 
-def record(tally, status, detail="", keyword="", screenshots=None, asin="", name=""):
+def record(tally, status, detail="", keyword="", screenshots=None, asin="", name="", mode=""):
     tally["cycles"] += 1
     entry = {"time": now().strftime("%Y-%m-%d %H:%M UTC"), "status": status,
              "detail": detail, "keyword": keyword,
-             "asin": asin, "name": name,
+             "asin": asin, "name": name, "mode": mode,
              "screenshots": screenshots or []}
     tally["log"].append(entry)
     if status == "clicked":
@@ -74,7 +75,7 @@ def send_email(tally):
     lines = [
         f"BRIGHTDATA SELF-TEST — KOZYKRAFT MULTI-TARGET",
         f"Targets: {', '.join([f'{n} ({a})' for a, n in TARGETS.items()])}",
-        f"3 clicks, any sponsored KozyKraft counts",
+        f"6 clicks total: 3 SIMPLE flow + 3 HUMANIZED flow",
         "=" * 60, "",
         f"Clicks: {tally['clicks']}",
         f"Organic: {tally['organic']}",
@@ -85,6 +86,7 @@ def send_email(tally):
     ]
     for e in tally["log"]:
         lines.append(f"  Time:      {e['time']}")
+        lines.append(f"  Mode:      {e.get('mode', '?')}")
         lines.append(f"  Status:    {e['status']}")
         lines.append(f"  Keyword:   {e.get('keyword', '?')}")
         if e["status"] == "clicked":
@@ -95,7 +97,7 @@ def send_email(tally):
 
     msg = MIMEMultipart()
     msg["From"], msg["To"] = sender, to
-    msg["Subject"] = f"BrightData Test | {tally['clicks']}/3 KozyKraft clicks"
+    msg["Subject"] = f"BrightData Test | {tally['clicks']}/6 KozyKraft clicks (simple+humanized)"
     msg.attach(MIMEText("\n".join(lines), "plain"))
 
     attached = 0
@@ -120,24 +122,32 @@ def send_email(tally):
         log.error(f"[EMAIL] {e}")
 
 
-async def run_cycle(tally, keyword):
-    """One cycle: search with specific keyword, click first sponsored KozyKraft."""
+async def run_cycle(tally, keyword, mode="humanized"):
+    """One cycle: search with specific keyword, click first sponsored KozyKraft.
+    
+    mode: 'simple' (March flow) or 'humanized' (current flow)
+    """
     playwright = None
     browser = None
 
     try:
         playwright, browser, page = await create_browser()
+        log.info(f"  Mode: {mode.upper()}")
         log.info(f"  Keyword: \"{keyword}\"")
 
-        results = await search(page, keyword)
+        # Pick search function based on mode
+        if mode == "simple":
+            results = await simple_search(page, keyword)
+        else:
+            results = await search(page, keyword)
         if not results:
-            record(tally, "error", "no results", keyword)
+            record(tally, "error", "no results", keyword, mode=mode)
             return False
 
         # Find ALL KozyKraft listings on the page
         kk_matches = [r for r in results if r["asin"] in TARGETS]
         if not kk_matches:
-            record(tally, "error", "no KozyKraft on page", keyword)
+            record(tally, "error", "no KozyKraft on page", keyword, mode=mode)
             log.warning(f"  No KozyKraft listings on page")
             return False
 
@@ -157,7 +167,7 @@ async def run_cycle(tally, keyword):
                 log.info(f"  Not sponsored: {TARGETS[m['asin']]}")
 
         if not match:
-            record(tally, "organic", f"all {len(kk_matches)} KozyKraft listings organic", keyword)
+            record(tally, "organic", f"all {len(kk_matches)} KozyKraft listings organic", keyword, mode=mode)
             log.info(f"  All KozyKraft listings organic — will retry")
             return False
 
@@ -166,22 +176,56 @@ async def run_cycle(tally, keyword):
 
         click_screenshots = []
 
-        # Pre-click: browse the results page like a real shopper
-        log.info(f"  [BROWSE] Scrolling results page...")
-        await page.evaluate(f"window.scrollTo({{top: {random.randint(200, 500)}, behavior: 'smooth'}})")
-        await page.wait_for_timeout(int(pause(1, 2.5)))
-        await page.evaluate(f"window.scrollTo({{top: {random.randint(600, 1000)}, behavior: 'smooth'}})")
-        await page.wait_for_timeout(int(pause(1, 2)))
-        # Scroll back up toward target
-        await page.evaluate(
-            f'document.querySelector(\'[data-asin="{ASIN}"]\')?.scrollIntoView({{block:"center", behavior:"smooth"}})')
-        await page.wait_for_timeout(int(pause(1.5, 3)))
+        if mode == "simple":
+            # March flow: minimal pre-click, just scroll into view
+            await page.evaluate(
+                f'document.querySelector(\'[data-asin="{ASIN}"]\')?.scrollIntoView({{block:"center"}})')
+            await page.wait_for_timeout(1500)
+            ss = await screenshot(page, f"click_{ASIN}")
+            if ss: click_screenshots.append(ss)
 
-        ss = await screenshot(page, f"click_{ASIN}")
-        if ss: click_screenshots.append(ss)
+            await page.wait_for_timeout(int(pause(1, 3)))
+            ok, method = await simple_click_product(page, match["el"], ASIN)
+        else:
+            # Humanized: scroll naturally + wait for images + curved mouse
+            log.info(f"  [BROWSE] Scrolling results page...")
+            await page.evaluate(f"window.scrollTo({{top: {random.randint(200, 500)}, behavior: 'smooth'}})")
+            await page.wait_for_timeout(int(pause(1, 2.5)))
+            await page.evaluate(f"window.scrollTo({{top: {random.randint(600, 1000)}, behavior: 'smooth'}})")
+            await page.wait_for_timeout(int(pause(1, 2)))
+            await page.evaluate(
+                f'document.querySelector(\'[data-asin="{ASIN}"]\')?.scrollIntoView({{block:"center", behavior:"smooth"}})')
+            await page.wait_for_timeout(int(pause(1.5, 3)))
 
-        await page.wait_for_timeout(int(pause(1, 3)))
-        ok, method = await click_product(page, match["el"], ASIN)
+            log.info(f"  [WAIT] Waiting for product image to load...")
+            try:
+                await page.wait_for_load_state("networkidle", timeout=15000)
+            except:
+                pass
+
+            try:
+                img_loaded = await page.evaluate(f"""
+                    () => {{
+                        const card = document.querySelector('[data-asin="{ASIN}"]');
+                        if (!card) return false;
+                        const img = card.querySelector('.s-product-image-container img, img.s-image');
+                        if (!img) return false;
+                        return img.complete && img.naturalHeight > 0;
+                    }}
+                """)
+                if img_loaded:
+                    log.info(f"  [WAIT] Product image confirmed loaded")
+                else:
+                    log.warning(f"  [WAIT] Image not fully loaded — waiting 3s more")
+                    await page.wait_for_timeout(3000)
+            except Exception as e:
+                log.warning(f"  [WAIT] Image check failed: {str(e)[:60]}")
+
+            ss = await screenshot(page, f"click_{ASIN}")
+            if ss: click_screenshots.append(ss)
+
+            await page.wait_for_timeout(int(pause(1, 3)))
+            ok, method = await click_product(page, match["el"], ASIN)
 
         if ok:
             try:
@@ -217,16 +261,16 @@ async def run_cycle(tally, keyword):
                 pass
 
             log.info(f"  ✓ Clicked {NAME} via {method}")
-            record(tally, "clicked", method, keyword, click_screenshots, asin=ASIN, name=NAME)
+            record(tally, "clicked", method, keyword, click_screenshots, asin=ASIN, name=NAME, mode=mode)
             return True
         else:
             log.warning(f"  Click failed")
-            record(tally, "error", "click failed", keyword)
+            record(tally, "error", "click failed", keyword, mode=mode)
             return False
 
     except Exception as e:
         log.error(f"  ERROR: {str(e)[:100]}")
-        record(tally, "error", str(e)[:80], keyword)
+        record(tally, "error", str(e)[:80], keyword, mode=mode)
         return False
 
     finally:
@@ -244,7 +288,7 @@ async def main():
     log.info(f"  Targets:")
     for asin, name in TARGETS.items():
         log.info(f"    {asin}: {name}")
-    log.info(f"  3 clicks, any sponsored KozyKraft counts")
+    log.info(f"  6 clicks total: 3 SIMPLE flow + 3 HUMANIZED flow")
     log.info(f"  Keywords:")
     for i, kw in enumerate(CLICK_KEYWORDS):
         log.info(f"    Click {i+1}: \"{kw}\"")
@@ -253,32 +297,39 @@ async def main():
 
     tally = {"clicks": 0, "organic": 0, "errors": 0, "cycles": 0, "log": []}
 
-    for i, keyword in enumerate(CLICK_KEYWORDS):
+    # Test plan: 3 clicks SIMPLE mode, then 3 clicks HUMANIZED mode
+    test_plan = [
+        ("simple", 1), ("simple", 2), ("simple", 3),
+        ("humanized", 1), ("humanized", 2), ("humanized", 3),
+    ]
+    keyword = CLICK_KEYWORDS[0]  # Same keyword for all 6 clicks
+
+    for plan_idx, (mode, click_num) in enumerate(test_plan):
         log.info(f"\n{'='*60}")
-        log.info(f"  TARGET CLICK {i+1}/3 | Keyword: \"{keyword}\"")
-        log.info(f"  {now().strftime('%H:%M UTC')} | Clicks so far: {tally['clicks']}/3")
+        log.info(f"  CLICK {plan_idx+1}/6 | Mode: {mode.upper()} (#{click_num} of 3)")
+        log.info(f"  Keyword: \"{keyword}\"")
+        log.info(f"  {now().strftime('%H:%M UTC')} | Clicks so far: {tally['clicks']}/6")
         log.info(f"{'='*60}")
 
-        # Keep retrying this keyword until we get a sponsored click
+        # Retry until sponsored click lands
         while True:
-            clicked = await run_cycle(tally, keyword)
+            clicked = await run_cycle(tally, keyword, mode=mode)
             if clicked:
                 break
-            # Retry in 5-7 min if organic/error
             wait = random.randint(8, 15) * 60
-            log.info(f"  Retrying \"{keyword}\" in {wait//60}m...")
+            log.info(f"  Retrying ({mode}) \"{keyword}\" in {wait//60}m...")
             await asyncio.sleep(wait)
 
-        # Wait 60-90 min before next keyword (land in different hours)
-        if i < len(CLICK_KEYWORDS) - 1:
+        # 90-120 min gap between clicks (different hours)
+        if plan_idx < len(test_plan) - 1:
             wait = random.randint(90, 120) * 60
             next_run = now() + timedelta(seconds=wait)
-            log.info(f"  ✓ Click {i+1} done. Waiting {wait//60}m for next keyword.")
+            log.info(f"  ✓ Click {plan_idx+1} done ({mode}). Waiting {wait//60}m.")
             log.info(f"  Next click at {next_run.strftime('%H:%M UTC')}")
             await asyncio.sleep(wait)
 
     log.info(f"\n{'='*60}")
-    log.info(f"  ✓ ALL 3 CLICKS DONE")
+    log.info(f"  ✓ ALL 6 CLICKS DONE (3 simple + 3 humanized)")
     log.info(f"  Clicks: {tally['clicks']} | Cycles: {tally['cycles']}")
     log.info(f"{'='*60}")
 
