@@ -1,7 +1,7 @@
 """
-scheduler.py - BrightData 10-click test on B0FCPFH2WR (KozyKraft Dehydrated).
-5 keywords × 2 modes (5 SIMPLE first, then 5 HUMANIZED).
-60-90 min gaps between clicks (different hours in Amazon report).
+scheduler.py - BrightData 4-click HUMANIZED test on B0FCPFH2WR (KozyKraft Dehydrated).
+4 keywords, HUMANIZED mode only.
+15 min gaps between clicks.
 Emails proof when done with mode + keyword logged for each click.
 """
 
@@ -28,13 +28,12 @@ log = logging.getLogger("tracker")
 TARGET_ASIN = "B0FCPFH2WR"
 TARGET_NAME = "KozyKraft Dehydrated Starter"
 
-# 5 keywords - will cycle through for SIMPLE, then repeat for HUMANIZED
+# 4 keywords for 4-click test
 KEYWORDS = [
     "sourdough starter culture",
     "sourdough starter dehydrated",
     "sourdough bread starter",
     "dry sourdough starter",
-    "starter culture bread",
 ]
 
 TALLY_FILE = "results/daily_tally.json"
@@ -79,14 +78,14 @@ def send_email(tally):
         return
     
     lines = [
-        f"BRIGHTDATA 10-CLICK TEST — KOZYKRAFT DEHYDRATED STARTER",
+        f"BRIGHTDATA 4-CLICK HUMANIZED TEST — KOZYKRAFT DEHYDRATED STARTER",
         f"Target: {TARGET_NAME} ({TARGET_ASIN})",
-        f"5 keywords × 2 modes: 5 SIMPLE clicks, then 5 HUMANIZED clicks",
+        f"4 keywords, 4 HUMANIZED clicks",
         f"Each click checks for SPONSORED status",
         "=" * 70,
         "",
         f"SUMMARY:",
-        f"  Clicks: {tally['clicks']}/10",
+        f"  Clicks: {tally['clicks']}/4",
         f"  Organic (not sponsored): {tally['organic']}",
         f"  Errors: {tally['errors']}",
         f"  Total cycles: {tally['cycles']}",
@@ -113,7 +112,7 @@ def send_email(tally):
     
     msg = MIMEMultipart()
     msg["From"], msg["To"] = sender, to
-    msg["Subject"] = f"BrightData 10-Click Test | {tally['clicks']}/10 sponsored clicks on {TARGET_ASIN}"
+    msg["Subject"] = f"BrightData 4-Click Humanized Test | {tally['clicks']}/4 sponsored clicks on {TARGET_ASIN}"
     msg.attach(MIMEText("\n".join(lines), "plain"))
     
     attached = 0
@@ -150,21 +149,37 @@ async def run_cycle(tally, keyword, mode, click_num):
     browser = None
     
     try:
-        playwright, browser, page = await create_browser()
-        
         log.info(f" Click #{click_num} | Mode: {mode.upper()} | Keyword: \"{keyword}\"")
         
-        # Pick search function based on mode
-        if mode == "simple":
-            results = await simple_search(page, keyword)
-        else:
-            results = await search(page, keyword)
+        try:
+            log.info(f" [CONNECT] Creating BrightData browser...")
+            playwright, browser, page = await create_browser()
+            log.info(f" [CONNECT] ✓ Browser ready")
+        except Exception as e:
+            log.error(f" [CONNECT] Failed: {str(e)[:100]}")
+            record(tally, "error", f"browser connect: {str(e)[:60]}", keyword, mode=mode, click_num=click_num)
+            return False
+        
+        try:
+            log.info(f" [SEARCH] Searching \"{keyword}\" ({mode.upper()})...")
+            # Pick search function based on mode
+            if mode == "simple":
+                results = await simple_search(page, keyword)
+            else:
+                results = await search(page, keyword)
+            log.info(f" [SEARCH] Got {len(results) if results else 0} results")
+        except Exception as e:
+            log.error(f" [SEARCH] Failed: {str(e)[:100]}")
+            record(tally, "error", f"search: {str(e)[:60]}", keyword, mode=mode, click_num=click_num)
+            return False
         
         if not results:
+            log.warning(f" [SEARCH] No results returned")
             record(tally, "error", "no results", keyword, mode=mode, click_num=click_num)
             return False
         
         # Find TARGET_ASIN
+        log.info(f" [FIND] Looking for {TARGET_ASIN} in {len(results)} results...")
         target_match = None
         for r in results:
             if r["asin"] == TARGET_ASIN:
@@ -172,22 +187,29 @@ async def run_cycle(tally, keyword, mode, click_num):
                 break
         
         if not target_match:
-            record(tally, "error", f"{TARGET_ASIN} not on page", keyword, mode=mode, click_num=click_num)
-            log.warning(f" Target ASIN not found")
+            asins_found = [r.get("asin", "?") for r in results[:5]]
+            log.warning(f" [FIND] Target not found. First 5 ASINs: {asins_found}")
+            record(tally, "error", f"{TARGET_ASIN} not on page (got {len(results)} results)", keyword, mode=mode, click_num=click_num)
             return False
         
-        log.info(f" ✓ Found target: [{TARGET_ASIN}] {TARGET_NAME} at #{target_match['i']}")
+        log.info(f" [FIND] ✓ Found [{TARGET_ASIN}] at position #{target_match['i']}")
         
         # CHECK FOR SPONSORED
-        log.info(f" Checking if SPONSORED...")
-        is_sponsored_result = await is_sponsored(page, TARGET_ASIN)
-        
-        if not is_sponsored_result:
-            record(tally, "organic", f"{TARGET_ASIN} not sponsored", keyword, mode=mode, click_num=click_num)
-            log.info(f" Listing is ORGANIC (not sponsored) — will retry")
+        try:
+            log.info(f" [SPONSORED] Checking if listing is sponsored...")
+            is_sponsored_result = await is_sponsored(page, TARGET_ASIN)
+            log.info(f" [SPONSORED] Result: {is_sponsored_result}")
+        except Exception as e:
+            log.error(f" [SPONSORED] Check failed: {str(e)[:80]}")
+            record(tally, "error", f"sponsored check: {str(e)[:50]}", keyword, mode=mode, click_num=click_num)
             return False
         
-        log.info(f" ✓ SPONSORED confirmed")
+        if not is_sponsored_result:
+            log.info(f" [SPONSORED] ✗ Listing is ORGANIC (not sponsored)")
+            record(tally, "organic", f"{TARGET_ASIN} not sponsored", keyword, mode=mode, click_num=click_num)
+            return False
+        
+        log.info(f" [SPONSORED] ✓ Confirmed SPONSORED")
         
         # CLICK
         click_screenshots = []
@@ -298,20 +320,19 @@ async def run_cycle(tally, keyword, mode, click_num):
 
 async def main():
     log.info(f"\n{'='*70}")
-    log.info(f" BRIGHTDATA 10-CLICK TEST — KOZYKRAFT DEHYDRATED STARTER")
+    log.info(f" BRIGHTDATA 4-CLICK HUMANIZED TEST — KOZYKRAFT DEHYDRATED STARTER")
     log.info(f" Target: {TARGET_ASIN} | {TARGET_NAME}")
-    log.info(f" 5 clicks SIMPLE mode (keywords 1-5)")
-    log.info(f" 5 clicks HUMANIZED mode (keywords 1-5)")
-    log.info(f" 60-90 min gap between successful clicks")
+    log.info(f" 4 clicks HUMANIZED mode (keywords 1-4)")
+    log.info(f" 15 min gap between successful clicks")
+    log.info(f" 5 min between search retries")
     log.info(f" Each click verifies SPONSORED status before clicking")
     log.info(f"{'='*70}\n")
     
     tally = {"clicks": 0, "organic": 0, "errors": 0, "cycles": 0, "log": []}
     
-    # Test plan: 5 SIMPLE clicks (keywords 0-4), then 5 HUMANIZED clicks (keywords 0-4)
+    # Test plan: 4 HUMANIZED clicks (keywords 0-3)
     test_plan = [
-        ("simple", 1), ("simple", 2), ("simple", 3), ("simple", 4), ("simple", 5),
-        ("humanized", 6), ("humanized", 7), ("humanized", 8), ("humanized", 9), ("humanized", 10),
+        ("humanized", 1), ("humanized", 2), ("humanized", 3), ("humanized", 4),
     ]
     
     for plan_idx, (mode, click_num) in enumerate(test_plan):
@@ -343,8 +364,8 @@ async def main():
             await asyncio.sleep(wait)
     
     log.info(f"\n{'='*70}")
-    log.info(f" ✓ ALL 10 CLICKS DONE (5 SIMPLE + 5 HUMANIZED)")
-    log.info(f" Clicks: {tally['clicks']}/10 | Cycles: {tally['cycles']}")
+    log.info(f" ✓ ALL 4 HUMANIZED CLICKS DONE")
+    log.info(f" Clicks: {tally['clicks']}/4 | Cycles: {tally['cycles']}")
     log.info(f"{'='*70}")
     
     send_email(tally)
